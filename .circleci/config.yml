@@ -1,0 +1,59 @@
+version: 2
+jobs:
+  build:
+    working_directory: /src
+    docker:
+      - image: numtide/circleci-nix
+    steps:
+      - checkout
+      - restore_cache:
+          key: nix-store
+      - run: nix-build
+      - persist_to_workspace:
+          root: /src
+          paths:
+            - result
+      - save_cache:
+          key: nix-store
+          when: always
+          paths:
+            - /nix
+
+  push:
+    working_directory: /src
+    docker:
+      - image: docker:17.05.0-ce-git
+    steps:
+      - setup_remote_docker
+      - attach_workspace:
+          at: /src
+      - run:
+          name: Load Docker image layer cache
+          command: |
+            docker load -i /src/result
+      - run:
+          name: Build application Docker image
+          command: |
+            docker build --cache-from=app -t app .
+      - run:
+          name: Save Docker image layer cache
+          command: |
+            mkdir -p /caches
+            docker save -o /caches/app.tar app
+      - save_cache:
+          key: v1-{{ .Branch }}-{{ epoch }}
+          paths:
+            - /caches/app.tar
+      - run:
+          name: Run tests
+          command: |
+            docker-compose -f ./docker-compose.test.yml up
+      - deploy:
+          name: Push application Docker image
+          command: |
+            if [ "${CIRCLE_BRANCH}" == "master" ]; then
+              login="$(aws ecr get-login)"
+              ${login}
+              docker tag app "${ECR_ENDPOINT}/app:${CIRCLE_SHA1}"
+              docker push "${ECR_ENDPOINT}/app:${CIRCLE_SHA1}"
+            fi
